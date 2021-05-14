@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -54,9 +54,9 @@ func NewController(
 	studentInformer informers.StudentInformer) *Controller {
 
 	utilruntime.Must(studentscheme.AddToScheme(scheme.Scheme))
-	glog.V(4).Info("Creating event broadcaster")
+	klog.V(4).Info("Creating event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
-	eventBroadcaster.StartLogging(glog.Infof)
+	eventBroadcaster.StartLogging(klog.Infof)
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kubeclientset.CoreV1().Events("")})
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerAgentName})
 
@@ -69,10 +69,10 @@ func NewController(
 		recorder:         recorder,
 	}
 
-	glog.Info("Setting up event handlers")
+	klog.Info("Setting up event handlers")
 	// Set up an event handler for when Student resources change
 	studentInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: controller.enqueueStudent,
+		AddFunc: controller.enqueueAddStudent,
 		UpdateFunc: func(old, new interface{}) {
 			oldStudent := old.(*whuv1.Student)
 			newStudent := new.(*whuv1.Student)
@@ -80,7 +80,7 @@ func NewController(
 				//版本一致，就表示没有实际更新的操作，立即返回
 				return
 			}
-			controller.enqueueStudent(new)
+			controller.enqueueUpdateStudent(new)
 		},
 		DeleteFunc: controller.enqueueStudentForDelete,
 	})
@@ -93,19 +93,19 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	defer runtime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
-	glog.Info("开始controller业务，开始一次缓存数据同步")
+	klog.Info("开始controller业务，开始一次缓存数据同步")
 	if ok := cache.WaitForCacheSync(stopCh, c.studentsSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
-	glog.Info("worker启动")
+	klog.Info("worker启动")
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
 
-	glog.Info("worker已经启动")
+	klog.Info("worker已经启动")
 	<-stopCh
-	glog.Info("worker已经结束")
+	klog.Info("worker已经结束")
 
 	return nil
 }
@@ -142,7 +142,7 @@ func (c *Controller) processNextWorkItem() bool {
 		}
 
 		c.workqueue.Forget(obj)
-		glog.Infof("Successfully synced '%s'", key)
+		klog.Infof("Successfully synced '%s'", key)
 		return nil
 	}(obj)
 
@@ -168,8 +168,6 @@ func (c *Controller) syncHandler(key string) error {
 	if err != nil {
 		// 如果Student对象被删除了，就会走到这里，所以应该在这里加入执行
 		if errors.IsNotFound(err) {
-			glog.Infof("Student对象被删除，请在这里执行实际的删除业务: %s/%s ...", namespace, name)
-
 			return nil
 		}
 
@@ -178,8 +176,6 @@ func (c *Controller) syncHandler(key string) error {
 		return err
 	}
 
-	glog.Infof("这里是student对象的期望状态: %#v ...", student)
-	glog.Infof("实际状态是从业务层面得到的，此处应该去的实际状态，与期望状态做对比，并根据差异做出响应(新增或者删除)")
 
 	c.recorder.Event(student, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
 	return nil
@@ -198,6 +194,35 @@ func (c *Controller) enqueueStudent(obj interface{}) {
 	// 将key放入队列
 	c.workqueue.AddRateLimited(key)
 }
+// 数据先放入缓存，再入队列
+func (c *Controller) enqueueAddStudent(obj interface{}) {
+	var key string
+	var err error
+	// 将对象放入缓存
+	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
+		runtime.HandleError(err)
+		return
+	}
+	klog.Infof("收到Student对象添加事件: %s ...\n", key)
+	// 将key放入队列
+	c.workqueue.AddRateLimited(key)
+}
+// 数据先放入缓存，再入队列
+func (c *Controller) enqueueUpdateStudent(obj interface{}) {
+	var key string
+	var err error
+	// 将对象放入缓存
+	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
+		runtime.HandleError(err)
+		return
+	}
+	klog.Infof("收到Student对象更新事件: %s ...\n", key)
+	// 将key放入队列
+	c.workqueue.AddRateLimited(key)
+}
+
+
+
 
 // 删除操作
 func (c *Controller) enqueueStudentForDelete(obj interface{}) {
@@ -209,6 +234,7 @@ func (c *Controller) enqueueStudentForDelete(obj interface{}) {
 		runtime.HandleError(err)
 		return
 	}
+	klog.Infof("收到Student对象被删除事件: %s/%s ...", key)
 	//再将key放入队列
 	c.workqueue.AddRateLimited(key)
 }
